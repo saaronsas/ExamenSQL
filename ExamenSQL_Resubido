@@ -1,0 +1,242 @@
+	     ***********************	*********************  ********
+	     * E X A M E N   S Q L *	* O S C A R   S A S *	 * 1º H *
+	     ***********************	*********************	 ********
+
+/*
+ * 1. Inner Joins
+ * Devuelve la información completa de todos las direcciones donde existen almacenes que hayan realizado alquileres de películas de clasificación 
+ * NC-17 en idioma INGLÉS. Mostrar la información de la dirección, el alquiler, y la película
+ */
+
+SELECT DISTINCT almacen.*, d.* FROM almacen INNER JOIN direccion d ON almacen.id_direccion = d.id_direccion
+    INNER JOIN inventario i ON almacen.id_almacen = i.id_almacen
+    INNER JOIN alquiler a ON i.id_inventario = a.id_inventario
+    INNER JOIN pelicula p ON i.id_pelicula = p.id_pelicula
+    INNER JOIN idioma i2 ON p.id_idioma = i2.id_idioma WHERE
+p.clasificacion = 'NC-17' AND i2.nombre = 'English';
+
+/*
+ * 2. Outer Joins
+ * Devuelve la información de todas las películas, junto con sus alquileres(hayan sido alquiladas, o no), y la información de la categoría, 
+ * de todas las actrices de nombre JULIA. Si la película ha sido alquilada se mostrará una columna con el texto ALQUILADA y en caso contrario NO ALQUILADA.
+ */
+
+SELECT pelicula.*, (
+    IF alquiler.id_inventario IS NOT NULL THEN 'ALQUILADA'
+    ELSE THEN 'NO ALQUILADA'
+    END IF) 
+    FROM pelicula 
+    INNER JOIN inventario i ON pelicula.id_pelicula = i.id_pelicula
+    LEFT JOIN alquiler a ON i.id_inventario = a.id_inventario
+    INNER JOIN pelicula_actor pa ON pelicula.id_pelicula = pa.id_pelicula
+    INNER JOIN actor ON actor.id_actor = pa.id_actor
+    INNER JOIN pelicula_categoria pc ON pc.id_pelicula = pelicula.id_pelicula
+    INNER JOIN categoria c ON c.id_categoria = pc.id_categoria WHERE
+    actor.nombre = 'JULIA';
+   
+/*
+ * 3. INDEX 
+ * Crea un índice de tipo FULL TEXT en la tabla direccion sobre los campos direccion y direccion2. Realiza después una 
+ * búsqueda sobre este índice para encontrar todas las Avenue donde viva algún empleado. Deja indicada en la solución esta consulta de búsqueda.
+ */
+   
+CREATE FULLTEXT INDEX direccion_direccion_direccion2_index ON direccion (direccion, direccion2);
+SELECT * FROM direccion WHERE MATCH(direccion, direccion2) AGAINST('Avenue');
+
+/*
+ * 4. STORED PROCEDURES
+ * Crea una tabla llamada caracteristicas_especiales(id_pelicula integer unsigned, trailer boolean, comentarios boolean, 
+ * behind_scenes boolean) y un procedimiento almacenado que leyendo la información de la tabla peliculas inserte en esta nueva 
+ * tabla el identificador de cada película y activando o desactivando el booleano correspondiente de la tabla según la información 
+ * contenida en la columna caracteristicas_especiales de la tabla peliculas. 
+ * Debes incorporar en la solución la consulta de creación de la tabla caracteristicas_especiales
+ */
+
+CREATE TABLE caracteristicas_especiales (
+    id_pelicula INTEGER UNSIGNED PRIMARY KEY NOT NULL,
+    trailer BOOLEAN,
+    comentarios BOOLEAN,
+    behind_scenes BOOLEAN
+);
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS fillCaracteristicas_especiales $$
+CREATE PROCEDURE fillCaracteristicas_especiales()
+BEGIN
+    DECLARE done BOOLEAN DEFAULT FALSE;
+    DECLARE _id_pelicula INT;
+    DECLARE _caracteristicas_especiales VARCHAR(100);
+    DECLARE _trailer, _comentarios, _behind_scenes BOOLEAN DEFAULT FALSE;
+    DECLARE peliculas CURSOR FOR SELECT id_pelicula, caracteristicas_especiales FROM pelicula;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+
+    OPEN peliculas;
+
+    START TRANSACTION;
+    DELETE FROM caracteristicas_especiales;
+    selectLoop: LOOP
+        FETCH peliculas INTO _id_pelicula, _caracteristicas_especiales;
+        IF done THEN
+            LEAVE selectLoop;
+        END IF ;
+        SET _trailer = FALSE;
+        SET _comentarios = FALSE;
+        SET _behind_scenes = FALSE;
+        IF locate('Trailers', _caracteristicas_especiales) != 0 THEN
+            SET _trailer = TRUE;
+        END IF ;
+        IF locate('Commentaries', _caracteristicas_especiales) != 0 THEN
+            SET _comentarios = TRUE;
+        END IF ;
+        IF locate('Behind the Scenes', _caracteristicas_especiales) != 0 THEN
+            SET _behind_scenes = TRUE;
+        END IF ;
+        INSERT INTO caracteristicas_especiales (id_pelicula, trailer, comentarios, behind_scenes) VALUES (_id_pelicula, _trailer, _comentarios, _behind_scenes);
+
+    END LOOP selectLoop;
+
+    COMMIT;
+
+    CLOSE peliculas;
+
+END $$
+DELIMITER ;
+
+/*
+ * 5. STORED PROCEDURES
+ * Crea un procedimiento almacenado que nos permita dado el parámetro del distrito devuelve como parámetro de salida el número 
+ * de clientes que están inactivos. Si ese parámetro es nulo mostraremos los clientes de cualquier distrito, además mostraremos 
+ * en pantalla su dirección de correo electrónico. 
+ */
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS getClientsFromDistrict $$
+CREATE PROCEDURE getClientsFromDistrict(IN _distrito VARCHAR(150), OUT number_of_clients INT)
+BEGIN
+    START TRANSACTION;
+    IF _distrito IS NOT NULL THEN
+        SET number_of_clients = (SELECT COUNT(activo) FROM netflix.cliente INNER JOIN direccion ON cliente.id_direccion = direccion.id_direccion WHERE direccion.distrito = _distrito AND cliente.activo = FALSE);
+        SELECT cliente.email FROM netflix.cliente INNER JOIN direccion ON cliente.id_direccion = direccion.id_direccion WHERE direccion.distrito = _distrito AND cliente.activo = FALSE;
+        UPDATE cliente INNER JOIN direccion ON cliente.id_direccion = direccion.id_direccion SET email = CONCAT(SUBSTR(nombre, 1, 1), SUBSTR(apellidos, 1, 3), '@salesianos.edu') WHERE direccion.distrito = _distrito;
+    ELSE
+        SET number_of_clients = (SELECT COUNT(activo) FROM netflix.cliente WHERE cliente.activo = FALSE);
+        SELECT cliente.email FROM netflix.cliente WHERE cliente.activo = FALSE;
+        UPDATE cliente SET email = CONCAT(SUBSTR(nombre, 1, 1), SUBSTR(apellidos, 1, 3), '@salesianos.edu');
+    END IF ;
+    COMMIT;
+END $$
+
+/*
+ * 6. STORED PROCEDURES
+ * Crea un procedimiento que marque como usuarios inactivos a aquellos clientes con un alquiler pendiente de devolver, además 
+ * crearemos una tabla llamada morosos en la que insertamos el identificador del cliente pendiente de devolver alguna película 
+ * y su email, debes controlar el error de duplicate primary key al introducir la información en la tabla de morosos morosos:
+ */
+
+CREATE TABLE morosos
+(
+	id_cliente INTEGER PRIMARY KEY,
+	email VARCHAR(50)
+);
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS insertMorosos $$
+CREATE PROCEDURE insertMorosos()
+BEGIN
+    DECLARE done BOOLEAN DEFAULT FALSE;
+    DECLARE _id_cliente INT;
+    DECLARE _email VARCHAR(100);
+    DECLARE clientes CURSOR FOR SELECT cliente.id_cliente, cliente.email FROM cliente INNER JOIN alquiler ON cliente.id_cliente = alquiler.id_cliente WHERE alquiler.fecha_devolucion IS NULL;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    DECLARE CONTINUE HANDLER FOR 1062 BEGIN END;
+    OPEN clientes;
+    START TRANSACTION;
+    selectLoop: LOOP
+        FETCH clientes INTO _id_cliente, _email;
+        IF done THEN
+            LEAVE selectLoop;
+        END IF ;
+        UPDATE cliente SET activo = FALSE WHERE id_cliente = _id_cliente;
+        INSERT INTO morosos (id_cliente, email) VALUES (_id_cliente, _email);
+    END LOOP;
+    CLOSE clientes;
+    COMMIT;
+END $$
+
+/*
+ * 7. FUNCTIONS
+ * Crea una función llamada horas_metraje que dada una calificación de edad de la pelicula(clasificacion) y una dirección de 
+ * calle de almacén nos diga el total de horas de metraje que existe de esa clasificación por edades de todos los almacenes de la dirección indicada
+ */
+
+DELIMITER $$
+DROP FUNCTION IF EXISTS horas_metraje$$
+CREATE FUNCTION horas_metraje(_clasificacion ENUM('G','PG','PG-13','R','NC-17'), _direccion VARCHAR(50))
+RETURNS INTEGER DETERMINISTIC
+BEGIN
+    RETURN (SELECT SUM(p.duracion)
+            FROM pelicula p, almacen a, direccion d, inventario i
+            WHERE p.id_pelicula = i.id_pelicula
+            AND i.id_almacen = a.id_almacen
+            AND d.id_direccion = a.id_direccion
+            AND p.clasificacion = _clasificacion
+            AND d.direccion = _direccion);
+END $$
+DELIMITER ;
+
+/*
+ * 8. FUNCTIONS
+ * Crea una función que dado un id_almacen, una duración máxima y una duracion minima nos devuelva el total del 
+ * (replacement_cost - rental_rate) de TODAS las películas de ese almacén con la duración indicada
+ */
+
+DELIMITER $$
+DROP FUNCTION IF EXISTS pelicula_almacen $$
+CREATE FUNCTION pelicula_almacen(idAlmacen INT, dur_max INT, dur_min INT)
+RETURNS INT DETERMINISTIC
+BEGIN 
+    RETURN(
+        SELECT (SUM(replacement_cost) - SUM(rental_rate))
+        FROM pelicula p, inventario i, almacen a
+        WHERE (p.id_pelicula = i.id_pelicula 
+	        AND i.id_almacen = a.id_almacen 
+	        AND p.duracion < dur_max 
+	        AND p.duracion > dur_min)
+    	);
+END $$
+DELIMITER ;
+SELECT pelicula_almacen(1, 100, 50);
+
+/*
+ * 9. TRIGGERS
+ * Crea un trigger que cuando se borre un jefe se reasigne los empleados que tenía por debajo a 
+ * otros jefes(no empleados). Esta re-asignacion de jefe se realizará de manera aleatoria siempre y 
+ * cuando el jefe nuevo al que se reasignan los empleados no tenga más de dos empleados asignados previamente.
+ */
+
+-- no se puede realizar, falta una columna
+
+/*
+ * 10. TRIGGERS
+ * Crea un trigger para que cuando un empleado pase de estar activo a inactivo, se deberá borrar el 
+ * campo password de la tabla y se guardará en una tabla llamada empleado_log( nombre_apellido varchar(100),
+ * old_pass varchar(50)) el nombre y apellido del empleado y la contraseña vieja que tenía, además este trigger 
+ * cada vez que se produzca una modificación de la tabla empleado deberá modificar la columna ultima_actualizacion insertando en ella la fecha actual.
+ */
+
+CREATE TABLE empleado_log(
+    nombre_apellido VARCHAR(100),
+    old_pass VARCHAR(50)
+ );
+
+DELIMITER $$
+DROP TRIGGER IF EXISTS employeeUpdate $$
+CREATE TRIGGER employeeUpdate BEFORE UPDATE ON empleado
+FOR EACH ROW
+BEGIN
+    IF (NEW.activo = FALSE AND OLD.activo = TRUE) THEN
+        SET NEW.password = NULL;
+        INSERT INTO empleado_log (nombre_apellido, old_pass) VALUES (CONCAT(NEW.nombre, NEW.apellidos), OLD.password);
+    END IF ;
+    SET NEW.ultima_actualizacion = NOW();
+END $$
